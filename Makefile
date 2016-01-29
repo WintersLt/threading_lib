@@ -37,6 +37,16 @@ test_tree:
 	$(CC) $(INCLUDES) tests/tree.c -o $@ $(LDFLAGS)
 	mv test_tree tests
 
+sem_test: 
+	rm -f tests/sem_test
+	$(CC) $(INCLUDES) tests/sem_test.c -o $@ $(LDFLAGS)
+	mv sem_test tests
+
+sem_premature_destroy: 
+	rm -f tests/sem_premature_destroy
+	$(CC) $(INCLUDES) tests/sem_premature_destroy.c -o $@ $(LDFLAGS)
+	mv sem_premature_destroy tests
+
 clean:
 	rm -f ./src/*.o ./src/*.a
 	rm -f ./tests/*.o ./tests/*.a

@@ -12,6 +12,7 @@ typedef enum
 	READY = 0,
 	RUNNING,
 	BLOCKED,
+	SEM_WAIT,
 	INVALID
 }STATE_e;
 
@@ -24,9 +25,16 @@ typedef struct _MyThreadCtx
 	STATE_e state;
 }MyThreadCtx_t;
 
+typedef struct _MySemaphore
+{
+	int value;
+	list* waitQ;
+}MySemaphore_t;
+
 /*Internal variable declarations*/
 static list readyQ;
 static list blockedQ;
+static list semList;
 static ucontext_t _loop_ctx; //Context to which every thread returns to. This is not main
 static ucontext_t _main_ctx; //main context of calling unix process
 static int _do_exit = 0; //To be set when readyQ is empty
@@ -37,6 +45,7 @@ void _my_thread_init(void(*start_funct)(void *), void *args);
 MyThreadCtx_t* _create_thread_ctx(void(*start_funct)(void *), void *args);
 void _my_thread_loop();
 void _cleanup_ctx(MyThreadCtx_t*);
+void _cleanup_mythreadlib();
 
 ////////////////////////////////////////////////////////
 
@@ -65,6 +74,7 @@ void _my_thread_init(void(*start_funct)(void *), void *args)
 		//initQs
 		list_new(&readyQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
 		list_new(&blockedQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
+		list_new(&semList, sizeof(MySemaphore_t), NULL/*freeFunc*/);
 		//create context
 		MyThreadCtx_t* new_thread_ctx = _create_thread_ctx(start_funct, args);
 		if(new_thread_ctx)
@@ -265,3 +275,71 @@ void MyThreadJoinAll(void)
 		swapcontext(curr_thread_ctx->p_uctx, &_loop_ctx);
 	}
 }
+
+/////////////////////////////////////////
+//Semaphore operations
+/////////////////////////////////////////
+
+MySemaphore MySemaphoreInit(int initialValue)
+{
+	//create and init new sem
+	MySemaphore_t* sem = (MySemaphore_t*)calloc(1, sizeof(MySemaphore_t));
+	if(initialValue < 0)
+		initialValue = 0;
+	sem->value = initialValue;
+	sem->waitQ = (list*)calloc(1, sizeof(list));
+	list_new(sem->waitQ, sizeof(MyThreadCtx_t), NULL/*freeFn*/);
+	//add to global sem list
+	list_append(&semList, sem);
+	return (MySemaphore)sem;
+}
+
+void MySemaphoreSignal(MySemaphore sem)
+{
+	//TODO check if semaphore valid
+	MySemaphore_t* _sem = (MySemaphore_t*)sem;
+	_sem->value++;
+	if(_sem->value <= 0)
+	{
+		//remove one proc from waitQ, put it on readyQ
+		MyThreadCtx_t* unblocked_thread_ctx = (MyThreadCtx_t*)list_pop_front(_sem->waitQ);
+		unblocked_thread_ctx->state = READY;
+		list_append(&readyQ, unblocked_thread_ctx);
+	}
+}
+
+void MySemaphoreWait(MySemaphore sem)
+{
+	MySemaphore_t* _sem = (MySemaphore_t*)sem;
+	_sem->value--;
+	if(_sem->value < 0)
+	{
+		//put the process in wait queue
+		MyThreadCtx_t* curr_thread_ctx = (MyThreadCtx_t*)list_pop_front(&readyQ);
+		curr_thread_ctx->state = SEM_WAIT;
+		list_append(_sem->waitQ, curr_thread_ctx);
+		swapcontext(curr_thread_ctx->p_uctx, &_loop_ctx);
+	}
+}
+
+int MySemaphoreDestroy(MySemaphore sem)
+{
+	//Cleanup the threads in waiting queue
+	//delete waiting queue
+	//remove semaphore from semList
+	MySemaphore_t* _sem = (MySemaphore_t*)sem;
+	if(_sem->waitQ->logicalLength)
+	{
+		return -1;
+	}
+	free(_sem->waitQ);
+	list_remove_node(&semList, sem);
+	free(sem);
+	return 0;
+}
+
+void _cleanup_mythreadlib()
+{
+	//cleanup all the queues, contexts ...
+}
+
