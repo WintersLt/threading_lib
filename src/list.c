@@ -5,6 +5,8 @@
  
 #include "list.h"
  
+#define printf(...) 
+
 void list_new(list *list, int elementSize, freeFunction freeFn)
 {
   printf("list_new:\n");

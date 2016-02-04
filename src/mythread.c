@@ -1,12 +1,30 @@
-#include "mythread.h"
+//TODO
+//1. Extra credit2: Mark the main context as special using some boolean. This
+//   can be used to deprioritize main_ctx whenever it shows up in readyQ and
+//   there are still threads in readyQ
+//2. NULL checks for all pointers
+//3. Error handling for system calls
+//4. Zombie thread case -: Thread creates 10 children and starts joining them
+//   one by one. So dont delete threads if the parent has not yet exited and 
+//   the current thread is not in waitQ of parent. And so when parent exits we
+//   have to delete all remaining childrent, which didn;t get to join. Also, 
+//   record how the library initialization has been done. This helps to decide
+//   ehether or not to switch to main_ctx at the end of loop.
+//TODO
+//1. Remove all unnecessary prints
+ 
+//#include "mythread.h"
+#include "mythreadextra.h"
 //#include "_mythread.h"
 #include "list.h"
 #include "stdio.h"
 #include "stdlib.h"
 #include "ucontext.h"
-
+#define printf(...) myfunc()
 #define STACK_SIZE 8*1024 //8 KB
 
+void myfunc()
+{}
 typedef enum
 {
 	READY = 0,
@@ -23,6 +41,7 @@ typedef struct _MyThreadCtx
 	list* p_child_list;  //To be used ny join all, contains pointers to children
 	list* p_wait_list;  //Contains pointers to threads this process needs to join with
 	STATE_e state;
+	int is_main_ctx;  //0 = Noot main ctx, used only by _extra functions
 }MyThreadCtx_t;
 
 typedef struct _MySemaphore
@@ -39,10 +58,15 @@ static ucontext_t _loop_ctx; //Context to which every thread returns to. This is
 static ucontext_t _main_ctx; //main context of calling unix process
 static int _do_exit = 0; //To be set when readyQ is empty
 static int _is_initialized = 0; //to be set in _my_thread_init
+static int _is_initialized_extra = 0; //to be set in _my_thread_init_extra
 
 /*Internal function declarations*/
+void _my_thread_init_extra(ucontext_t* p_uctx);
 void _my_thread_init(void(*start_funct)(void *), void *args);
+void _my_thread_init_queues();
+MyThreadCtx_t* _create_thread_ctx_from_uctx(ucontext_t* p_uctx);
 MyThreadCtx_t* _create_thread_ctx(void(*start_funct)(void *), void *args);
+void _my_thread_loop_extra();
 void _my_thread_loop();
 void _cleanup_ctx(MyThreadCtx_t*);
 void _cleanup_mythreadlib();
@@ -67,14 +91,67 @@ void MyThreadInit(void(*start_funct)(void *), void *args)
 	}
 }
 
+void MyThreadInitExtra()
+{
+	//initialize internal queues
+	ucontext_t* p_uctx = (ucontext_t*)calloc(1, sizeof(ucontext_t));
+	getcontext(p_uctx);	
+	if(_is_initialized_extra)	//So that the function returns when the context resumes
+		return;
+	if(!_do_exit)
+	{
+		_my_thread_init_extra(p_uctx);
+		//start ready loop
+		_my_thread_loop_extra();
+	}
+	else
+	{
+		//return to main unix thread
+		return;
+	}
+}
+
+void _my_thread_init_queues()
+{
+	if(!(_is_initialized || _is_initialized_extra))
+	{
+		list_new(&readyQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
+		list_new(&blockedQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
+		list_new(&semList, sizeof(MySemaphore_t), NULL/*freeFunc*/);
+	}
+}
+
+void _my_thread_init_extra(ucontext_t* p_uctx)
+{
+	if(!_is_initialized_extra)
+	{
+		//initQs
+		_my_thread_init_queues();
+		//create context
+		MyThreadCtx_t* new_thread_ctx = _create_thread_ctx_from_uctx(p_uctx);
+		if(new_thread_ctx)
+		{
+			new_thread_ctx->is_main_ctx = 1;
+			list_append(&readyQ, (void*)new_thread_ctx);
+		}
+		else
+		{
+			//TODO
+		}
+		_is_initialized_extra = 1;
+	}
+	else
+	{
+		printf("_my_thread_init_extra(): MyThread already initialized");
+	}
+}
+
 void _my_thread_init(void(*start_funct)(void *), void *args)
 {
 	if(!_is_initialized)
 	{
 		//initQs
-		list_new(&readyQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
-		list_new(&blockedQ, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
-		list_new(&semList, sizeof(MySemaphore_t), NULL/*freeFunc*/);
+		_my_thread_init_queues();
 		//create context
 		MyThreadCtx_t* new_thread_ctx = _create_thread_ctx(start_funct, args);
 		if(new_thread_ctx)
@@ -91,6 +168,27 @@ void _my_thread_init(void(*start_funct)(void *), void *args)
 	{
 		printf("MyThread already initialized");
 	}
+}
+
+MyThreadCtx_t* _create_thread_ctx_from_uctx(ucontext_t* p_uctx)
+{
+	MyThreadCtx_t* my_thread_ctx = (MyThreadCtx_t*)calloc(1, sizeof(MyThreadCtx_t));
+	if(!my_thread_ctx)
+	{
+		printf("error");
+		//TODO handle
+		return NULL;
+	}
+	my_thread_ctx->p_uctx = p_uctx;
+
+	my_thread_ctx->p_parent = NULL;
+	my_thread_ctx->p_child_list = (list*)calloc(1, sizeof(list));
+	list_new(my_thread_ctx->p_child_list, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
+	my_thread_ctx->p_wait_list = (list*)calloc(1, sizeof(list));
+	list_new(my_thread_ctx->p_wait_list, sizeof(MyThreadCtx_t), NULL/*freeFunc*/);
+	my_thread_ctx->state = READY;
+
+	return my_thread_ctx;
 }
 
 MyThreadCtx_t* _create_thread_ctx(void(*start_funct)(void *), void *args)
@@ -122,6 +220,40 @@ MyThreadCtx_t* _create_thread_ctx(void(*start_funct)(void *), void *args)
 	return my_thread_ctx;
 }
 
+void _my_thread_loop_extra()
+{
+	while(readyQ.logicalLength)
+	{
+		MyThreadCtx_t* ctx_to_exec = (MyThreadCtx_t*)readyQ.head->data;
+		if(ctx_to_exec->is_main_ctx == 1
+			&& readyQ.logicalLength > 1)
+		{
+			//put it at the back of Queue. 
+			list_pop_front(&readyQ);
+			list_append(&readyQ, ctx_to_exec);
+			ctx_to_exec = (MyThreadCtx_t*)readyQ.head->data;
+		}
+		//switch context to top of ready queue 
+		printf("_my_thread_init_extra: swapping to thread ctx\n");
+		ctx_to_exec->state = RUNNING;
+		swapcontext(&_loop_ctx, ctx_to_exec->p_uctx);
+		printf("_my_thread_init_extra: back to _loop_ctx\n");
+		//in case head changed while I was sleeping
+		if(readyQ.logicalLength)
+		{
+			ctx_to_exec = (MyThreadCtx_t*)readyQ.head->data;
+			//state will be ready, if thread yeilded or called MythreadExit...
+			if(ctx_to_exec->state == RUNNING)
+			{
+				MyThreadExit();
+			}
+		}
+	}
+	//everything done
+	//TODO _cleanup
+	exit(0);
+}
+
 void _my_thread_loop()
 {
 	while(readyQ.logicalLength)
@@ -151,7 +283,7 @@ void _my_thread_loop()
 		//release resources it holds
 		//later check semaphore status
 	}
-	//retunr to main unix program gracefully, after deleting any resurces in queues
+	//return to main unix program gracefully, after deleting any resurces in queues
 	//For that we'll have to keep the main context saved
 	_do_exit = 1;
 	setcontext(&_main_ctx);
@@ -168,15 +300,17 @@ void MyThreadExit(void)
 		list_remove_node(curr_thread_ctx->p_parent->p_child_list, curr_node->data);
 	}
 	//join
-	if(curr_thread_ctx->p_parent
-		&& curr_thread_ctx->p_parent->state == BLOCKED)
+	if(curr_thread_ctx->p_parent 
+		/*Only to prevent unnecessary check in next condition*/
+		&& curr_thread_ctx->p_parent->state == BLOCKED 
+		/*check if parent is waiting on this thread*/
+		&& list_search_node(curr_thread_ctx->p_parent->p_wait_list, curr_thread_ctx))
 	{
 		list_remove_node(curr_thread_ctx->p_parent->p_wait_list, curr_node->data);
 		//if wait_list of parent is empty, unblock it
 		if(!curr_thread_ctx->p_parent->p_wait_list->logicalLength)
 		{
 			//unblocking parent
-			//TODO perform semaphore block check as well
 			list_remove_node(&blockedQ, curr_thread_ctx->p_parent);
 			curr_thread_ctx->p_parent->state = READY;
 			list_append(&readyQ, curr_thread_ctx->p_parent);
@@ -202,7 +336,8 @@ void _cleanup_ctx(MyThreadCtx_t* ctx)
 	printf("_cleanup_ctx: Enter<%p>\n", ctx);
 	list_destroy(ctx->p_wait_list);
 	list_destroy(ctx->p_child_list);
-	free(ctx->p_uctx->uc_stack.ss_sp);
+	if(!ctx->is_main_ctx)
+		free(ctx->p_uctx->uc_stack.ss_sp);
 	free(ctx->p_uctx);
 	free(ctx);
 }
@@ -234,16 +369,15 @@ void MyThreadYield(void)
 int MyThreadJoin(MyThread thread)
 {
 	MyThreadCtx_t* thread_to_join_ctx = (MyThreadCtx_t*)thread;
+	MyThreadCtx_t* curr_thread_ctx = (MyThreadCtx_t*)(MyThreadCtx_t*)readyQ.head->data;
 	if(thread_to_join_ctx 
-		/*Only parent can join*/
-		&& thread_to_join_ctx->p_parent == (MyThreadCtx_t*)readyQ.head->data 
 		/*check if its a child*/
-		&& (list_search_node(thread_to_join_ctx->p_parent->p_child_list, thread_to_join_ctx)) 
+		&& list_search_node(curr_thread_ctx->p_child_list, thread_to_join_ctx) 
 		/*check if not already waiting*/
-		&& !list_search_node(thread_to_join_ctx->p_parent->p_wait_list, thread_to_join_ctx))
+		&& !list_search_node(curr_thread_ctx->p_wait_list, thread_to_join_ctx))
 	{
-		list_append(thread_to_join_ctx->p_parent->p_wait_list, (void*)thread_to_join_ctx);
-		MyThreadCtx_t* curr_thread_ctx = (MyThreadCtx_t*)list_pop_front(&readyQ);
+		list_append(curr_thread_ctx->p_wait_list, (void*)thread_to_join_ctx);
+		list_pop_front(&readyQ);
 		curr_thread_ctx->state = BLOCKED;
 		list_append(&blockedQ, curr_thread_ctx);
 		swapcontext(curr_thread_ctx->p_uctx, &_loop_ctx);
@@ -252,6 +386,7 @@ int MyThreadJoin(MyThread thread)
 	return 1;
 }
 
+//TODO test this
 void MyThreadJoinAll(void)
 {
 	listNode* child = readyQ.head;
@@ -283,9 +418,9 @@ void MyThreadJoinAll(void)
 MySemaphore MySemaphoreInit(int initialValue)
 {
 	//create and init new sem
-	MySemaphore_t* sem = (MySemaphore_t*)calloc(1, sizeof(MySemaphore_t));
 	if(initialValue < 0)
-		initialValue = 0;
+		return NULL;
+	MySemaphore_t* sem = (MySemaphore_t*)calloc(1, sizeof(MySemaphore_t));
 	sem->value = initialValue;
 	sem->waitQ = (list*)calloc(1, sizeof(list));
 	list_new(sem->waitQ, sizeof(MyThreadCtx_t), NULL/*freeFn*/);
@@ -296,7 +431,11 @@ MySemaphore MySemaphoreInit(int initialValue)
 
 void MySemaphoreSignal(MySemaphore sem)
 {
-	//TODO check if semaphore valid
+	//check if semaphore valid
+	if(!list_search_node(&semList, sem))
+	{
+		return;
+	}
 	MySemaphore_t* _sem = (MySemaphore_t*)sem;
 	_sem->value++;
 	if(_sem->value <= 0)
@@ -310,6 +449,11 @@ void MySemaphoreSignal(MySemaphore sem)
 
 void MySemaphoreWait(MySemaphore sem)
 {
+	//check if semaphore valid
+	if(!list_search_node(&semList, sem))
+	{
+		return;
+	}
 	MySemaphore_t* _sem = (MySemaphore_t*)sem;
 	_sem->value--;
 	if(_sem->value < 0)
@@ -324,6 +468,11 @@ void MySemaphoreWait(MySemaphore sem)
 
 int MySemaphoreDestroy(MySemaphore sem)
 {
+	//check if semaphore valid
+	if(!list_search_node(&semList, sem))
+	{
+		return -1;
+	}
 	//Cleanup the threads in waiting queue
 	//delete waiting queue
 	//remove semaphore from semList
@@ -341,5 +490,7 @@ int MySemaphoreDestroy(MySemaphore sem)
 void _cleanup_mythreadlib()
 {
 	//cleanup all the queues, contexts ...
+	//clear global blocked queue
+	//clear block queue of every semaphore
 }
 

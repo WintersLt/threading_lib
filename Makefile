@@ -7,7 +7,7 @@ EXECUTABLE=hello
 
 INCLUDES=-I ./inc
 
-all: $(SOURCES) $(OBJECTS) mythread_a
+all: $(SOURCES) $(OBJECTS) mythread_a test_mythread1 test_passing test_ping test_tree sem_test sem_premature_destroy test_mythreadextra
     
 #$(EXECUTABLE): $(OBJECTS) 
 #    $(CC) $(LDFLAGS) $(OBJECTS) -o $@
@@ -47,7 +47,11 @@ sem_premature_destroy:
 	$(CC) $(INCLUDES) tests/sem_premature_destroy.c -o $@ $(LDFLAGS)
 	mv sem_premature_destroy tests
 
+test_mythreadextra: 
+	rm -f tests/test_mythreadextra
+	$(CC) $(INCLUDES) tests/TestMyThreadExtra.c -o $@ $(LDFLAGS)
+	mv test_mythreadextra tests
+
 clean:
 	rm -f ./src/*.o ./src/*.a
 	rm -f ./tests/*.o ./tests/*.a
-
