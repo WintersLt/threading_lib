@@ -251,6 +251,7 @@ void _my_thread_loop_extra()
 	}
 	//everything done
 	//TODO _cleanup
+	_cleanup_mythreadlib();
 	exit(0);
 }
 
@@ -286,6 +287,7 @@ void _my_thread_loop()
 	//return to main unix program gracefully, after deleting any resurces in queues
 	//For that we'll have to keep the main context saved
 	_do_exit = 1;
+	_cleanup_mythreadlib();
 	setcontext(&_main_ctx);
 }
 
@@ -389,8 +391,8 @@ int MyThreadJoin(MyThread thread)
 //TODO test this
 void MyThreadJoinAll(void)
 {
-	listNode* child = readyQ.head;
 	MyThreadCtx_t* curr_thread_ctx = (MyThreadCtx_t*)readyQ.head->data;
+	listNode* child = curr_thread_ctx->p_child_list->head;
 	int inserted = 0;
 	while(child != NULL)
 	{
@@ -492,5 +494,24 @@ void _cleanup_mythreadlib()
 	//cleanup all the queues, contexts ...
 	//clear global blocked queue
 	//clear block queue of every semaphore
+	while(blockedQ.logicalLength)
+	{
+		MyThreadCtx_t* ctx_to_del = (MyThreadCtx_t*)blockedQ.head->data;
+		_cleanup_ctx(ctx_to_del);
+		list_pop_front(&blockedQ);
+	}
+
+	while(semList.logicalLength)
+	{
+		MySemaphore_t* _sem = (MySemaphore_t*)semList.head->data;
+		while(_sem->waitQ->logicalLength)
+		{
+			MyThreadCtx_t* ctx_to_del = (MyThreadCtx_t*)_sem->waitQ->head->data;
+			_cleanup_ctx(ctx_to_del);
+			list_pop_front(_sem->waitQ);
+		}
+		free(_sem);
+		list_pop_front(&semList);
+	}
 }
 
